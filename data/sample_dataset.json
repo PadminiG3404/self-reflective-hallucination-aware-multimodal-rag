@@ -1,0 +1,14 @@
+[
+  {
+    "item_id": "doc1",
+    "text": "A red car is parked near a tree while a person walks by on the sidewalk.",
+    "image_path": "images/doc1.jpg",
+    "metadata": {"split": "train"}
+  },
+  {
+    "item_id": "doc2",
+    "text": "A group of cyclists ride along a road with mountains in the background.",
+    "image_path": "images/doc2.jpg",
+    "metadata": {"split": "train"}
+  }
+]

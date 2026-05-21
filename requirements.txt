@@ -1,0 +1,14 @@
+torch
+transformers
+faiss-cpu
+torch-geometric
+networkx
+numpy
+scikit-learn
+pydantic
+fastapi
+uvicorn
+hydra-core
+wandb
+pytest
+pillow
