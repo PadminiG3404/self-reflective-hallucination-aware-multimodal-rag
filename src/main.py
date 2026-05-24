@@ -11,11 +11,13 @@ import numpy as np
 from omegaconf import OmegaConf
 from PIL import Image
 from transformers import pipeline
+from io import BytesIO
 
 from src.encoders.multimodal_encoder import MultimodalEncoder
 from src.explainability.explainer import ExplainableGenerator
 from src.graph_reasoning.entity_extractor import EntityExtractor
 from src.data.ingestion import build_evidence_chunks, load_dataset
+from src.data.webqa import WebQAImageStore, build_webqa_evidence, load_webqa_questions
 from src.graph_reasoning.semantic_graph import GraphNode, SemanticReasoningGraph
 from src.hallucination.detector import HallucinationDetector
 from src.refinement.retrieval_refiner import AdaptiveRetrieverRefiner
@@ -25,6 +27,7 @@ from src.uncertainty.estimator import UncertaintyEstimator
 from src.utils.schemas import EvidenceChunk, FinalExplanation
 from src.utils.seed import set_seed
 from src.evaluation.runner import EvaluationRunner
+from src.evaluation import metrics
 
 
 class HallucinationAwareMultimodalRAG:
@@ -62,6 +65,7 @@ class HallucinationAwareMultimodalRAG:
         )
         self.repo_root = Path(__file__).resolve().parents[1]
         self.data_dir = self.repo_root / "data"
+        self.webqa_store: WebQAImageStore | None = None
 
     def run(self, image: Optional[object], query: str) -> FinalExplanation:
         query_embedding = self._encode_query(query, image)
@@ -167,21 +171,58 @@ class HallucinationAwareMultimodalRAG:
     def _build_image_embeddings(
         self, evidence: List[EvidenceChunk], embedding_dim: int
     ) -> np.ndarray | None:
-        image_paths = [chunk.metadata.get("image_path") for chunk in evidence]
-        if not any(image_paths):
+        dataset_cfg = self.config.get("dataset", {})
+        has_any_images = any(
+            chunk.metadata.get("image_path") or chunk.metadata.get("image_source") == "webqa_tsv"
+            for chunk in evidence
+        )
+        if not has_any_images:
             return None
-        embeddings = []
         cache: dict[str, np.ndarray] = {}
-        base_dir = self.config.get("dataset", {}).get("image_base_dir")
-        for image_path in image_paths:
+        embeddings = []
+        base_dir = dataset_cfg.get("image_base_dir")
+        if any(chunk.metadata.get("image_source") == "webqa_tsv" for chunk in evidence):
+            tsv_path = Path(dataset_cfg.get("image_tsv"))
+            if not tsv_path.is_absolute():
+                tsv_path = self.repo_root / tsv_path
+            target_ids = {
+                str(chunk.metadata.get("image_id"))
+                for chunk in evidence
+                if chunk.metadata.get("image_source") == "webqa_tsv"
+            }
+            self.webqa_store = self.webqa_store or WebQAImageStore(
+                tsv_path, target_ids=target_ids
+            )
+        for chunk in evidence:
+            if chunk.metadata.get("image_source") == "webqa_tsv":
+                image_id = chunk.metadata.get("image_id")
+                cache_key = f"webqa:{image_id}"
+                if cache_key in cache:
+                    embeddings.append(cache[cache_key])
+                    continue
+                if image_id is None or self.webqa_store is None:
+                    embeddings.append(np.zeros((embedding_dim,), dtype=np.float32))
+                    continue
+                image_bytes = self.webqa_store.get_image_bytes(str(image_id))
+                if image_bytes is None:
+                    embeddings.append(np.zeros((embedding_dim,), dtype=np.float32))
+                    continue
+                image = Image.open(BytesIO(image_bytes)).convert("RGB")
+                image_embedding = self.encoder.encode_image([image]).embeddings
+                vector = image_embedding.cpu().numpy().reshape(-1)
+                cache[cache_key] = vector
+                embeddings.append(vector)
+                continue
+            image_path = chunk.metadata.get("image_path")
             if not image_path:
                 embeddings.append(np.zeros((embedding_dim,), dtype=np.float32))
                 continue
             resolved = Path(image_path)
             if not resolved.is_absolute() and base_dir:
                 resolved = self.repo_root / base_dir / image_path
-            if str(resolved) in cache:
-                embeddings.append(cache[str(resolved)])
+            cache_key = str(resolved)
+            if cache_key in cache:
+                embeddings.append(cache[cache_key])
                 continue
             if not resolved.exists():
                 embeddings.append(np.zeros((embedding_dim,), dtype=np.float32))
@@ -189,12 +230,22 @@ class HallucinationAwareMultimodalRAG:
             image = Image.open(resolved).convert("RGB")
             image_embedding = self.encoder.encode_image([image]).embeddings
             vector = image_embedding.cpu().numpy().reshape(-1)
-            cache[str(resolved)] = vector
+            cache[cache_key] = vector
             embeddings.append(vector)
         return np.stack(embeddings).astype(np.float32)
 
     def _load_evidence(self) -> List[EvidenceChunk]:
         dataset_cfg = self.config.get("dataset", {})
+        if dataset_cfg.get("format") == "webqa":
+            dataset_path = Path(dataset_cfg.get("path"))
+            if not dataset_path.is_absolute():
+                dataset_path = self.repo_root / dataset_path
+            return build_webqa_evidence(
+                dataset_path,
+                split=dataset_cfg.get("split"),
+                include_negatives=dataset_cfg.get("include_negatives", False),
+                max_items=dataset_cfg.get("max_items"),
+            )
         dataset_path_value = dataset_cfg.get("path")
         if dataset_path_value:
             dataset_path = Path(dataset_path_value)
@@ -241,28 +292,125 @@ if __name__ == "__main__":
     rag = HallucinationAwareMultimodalRAG(config=config)
     if args.evaluate:
         dataset_cfg = config.get("dataset", {})
-        items = load_dataset(
-            Path(dataset_cfg.get("path")),
-            fmt=dataset_cfg.get("format"),
-            max_items=config.get("evaluation", {}).get("max_items"),
-        )
         explanations = []
         start_times = []
         end_times = []
-        for item in items:
-            image_obj = None
-            if item.image_path:
-                image_path = Path(item.image_path)
-                if not image_path.is_absolute():
-                    image_path = rag.repo_root / dataset_cfg.get("image_base_dir", "data") / item.image_path
-                if image_path.exists():
-                    image_obj = Image.open(image_path).convert("RGB")
-            start_times.append(time.time())
-            explanations.append(rag.run(image=image_obj, query=item.text))
-            end_times.append(time.time())
-        runner = EvaluationRunner()
-        result = runner.evaluate(explanations, start_times, end_times)
-        print(json.dumps({"summary": result.summaries}, indent=2))
+        eval_cfg = config.get("evaluation", {})
+        checkpoint_path = Path(eval_cfg.get("checkpoint_path", "data/webqa_eval_checkpoint.json"))
+        if not checkpoint_path.is_absolute():
+            checkpoint_path = rag.repo_root / checkpoint_path
+        checkpoint = {
+            "next_index": 0,
+            "count": 0,
+            "sum_hallucination": 0.0,
+            "sum_grounding": 0.0,
+            "sum_uncertainty": 0.0,
+            "sum_latency_ms": 0.0,
+        }
+        if checkpoint_path.exists():
+            with checkpoint_path.open("r", encoding="utf-8") as handle:
+                checkpoint.update(json.load(handle))
+        log_every = int(eval_cfg.get("log_every", 25))
+        start_wall = time.time()
+        if dataset_cfg.get("format") == "webqa":
+            dataset_path = Path(dataset_cfg.get("path"))
+            if not dataset_path.is_absolute():
+                dataset_path = rag.repo_root / dataset_path
+            questions = load_webqa_questions(
+                dataset_path,
+                split=dataset_cfg.get("split"),
+                max_items=eval_cfg.get("max_items"),
+            )
+            tsv_path = Path(dataset_cfg.get("image_tsv"))
+            if not tsv_path.is_absolute():
+                tsv_path = rag.repo_root / tsv_path
+            rag.webqa_store = rag.webqa_store or WebQAImageStore(tsv_path)
+            total_items = len(questions)
+            for idx, item in enumerate(questions):
+                if idx < checkpoint["next_index"]:
+                    continue
+                image_obj = None
+                if item.get("image_id"):
+                    image_bytes = rag.webqa_store.get_image_bytes(item["image_id"])
+                    if image_bytes is not None:
+                        image_obj = Image.open(BytesIO(image_bytes)).convert("RGB")
+                start_time = time.time()
+                explanation = rag.run(image=image_obj, query=item.get("question"))
+                end_time = time.time()
+                latency_value = metrics.latency_ms(start_time, end_time)
+                hallucination_score = explanation.hallucination_report.hallucination_score
+                grounding_score = 1.0 - hallucination_score
+                checkpoint["count"] += 1
+                checkpoint["sum_hallucination"] += hallucination_score
+                checkpoint["sum_grounding"] += grounding_score
+                checkpoint["sum_uncertainty"] += explanation.uncertainty_report.calibration_score
+                checkpoint["sum_latency_ms"] += latency_value
+                checkpoint["next_index"] = idx + 1
+                if log_every and checkpoint["count"] % log_every == 0:
+                    elapsed = time.time() - start_wall
+                    remaining = total_items - checkpoint["next_index"]
+                    rate = checkpoint["count"] / max(1.0, elapsed)
+                    eta = remaining / max(rate, 1e-6)
+                    print(
+                        f"Processed {checkpoint['next_index']}/{total_items} items "
+                        f"({rate:.2f} items/s, ETA {eta/60:.1f} min)"
+                    )
+                    with checkpoint_path.open("w", encoding="utf-8") as handle:
+                        json.dump(checkpoint, handle)
+        else:
+            items = load_dataset(
+                Path(dataset_cfg.get("path")),
+                fmt=dataset_cfg.get("format"),
+                max_items=eval_cfg.get("max_items"),
+            )
+            total_items = len(items)
+            for idx, item in enumerate(items):
+                if idx < checkpoint["next_index"]:
+                    continue
+                image_obj = None
+                if item.image_path:
+                    image_path = Path(item.image_path)
+                    if not image_path.is_absolute():
+                        image_path = rag.repo_root / dataset_cfg.get("image_base_dir", "data") / item.image_path
+                    if image_path.exists():
+                        image_obj = Image.open(image_path).convert("RGB")
+                start_time = time.time()
+                explanation = rag.run(image=image_obj, query=item.text)
+                end_time = time.time()
+                latency_value = metrics.latency_ms(start_time, end_time)
+                hallucination_score = explanation.hallucination_report.hallucination_score
+                grounding_score = 1.0 - hallucination_score
+                checkpoint["count"] += 1
+                checkpoint["sum_hallucination"] += hallucination_score
+                checkpoint["sum_grounding"] += grounding_score
+                checkpoint["sum_uncertainty"] += explanation.uncertainty_report.calibration_score
+                checkpoint["sum_latency_ms"] += latency_value
+                checkpoint["next_index"] = idx + 1
+                if log_every and checkpoint["count"] % log_every == 0:
+                    elapsed = time.time() - start_wall
+                    remaining = total_items - checkpoint["next_index"]
+                    rate = checkpoint["count"] / max(1.0, elapsed)
+                    eta = remaining / max(rate, 1e-6)
+                    print(
+                        f"Processed {checkpoint['next_index']}/{total_items} items "
+                        f"({rate:.2f} items/s, ETA {eta/60:.1f} min)"
+                    )
+                    with checkpoint_path.open("w", encoding="utf-8") as handle:
+                        json.dump(checkpoint, handle)
+        if checkpoint["count"] == 0:
+            print("No evaluation items were processed.")
+        else:
+            summary = {
+                "hallucination_score": checkpoint["sum_hallucination"] / checkpoint["count"],
+                "grounding_score": checkpoint["sum_grounding"] / checkpoint["count"],
+                "uncertainty": checkpoint["sum_uncertainty"] / checkpoint["count"],
+                "latency_ms": checkpoint["sum_latency_ms"] / checkpoint["count"],
+                "count": checkpoint["count"],
+            }
+            checkpoint["summary"] = summary
+            with checkpoint_path.open("w", encoding="utf-8") as handle:
+                json.dump(checkpoint, handle)
+            print(json.dumps({"summary": summary}, indent=2))
     else:
         image_obj = Image.open(args.image).convert("RGB") if args.image else None
         output = rag.run(image=image_obj, query=args.query)

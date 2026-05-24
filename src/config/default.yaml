@@ -4,12 +4,12 @@ project:
   device: cpu
 
 dataset:
-  path: data/sample_dataset.json
-  format: json
-  chunk_size: 24
-  chunk_overlap: 4
-  max_items: 100
-  image_base_dir: data
+  path: dataset/WebQA/WebQA_train_val.json
+  format: webqa
+  split: train
+  include_negatives: false
+  max_items: 2000
+  image_tsv: dataset/WebQA/imgs.tsv
 
 encoder:
   model_type: clip
@@ -47,3 +47,5 @@ entities:
 
 evaluation:
   max_items: 10
+  log_every: 25
+  checkpoint_path: data/webqa_eval_checkpoint.json

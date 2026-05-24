@@ -11,5 +11,9 @@ ENV/
 # Pytest
 .pytest_cache/
 
+# Datasets and large artifacts
+dataset/
+data/webqa_eval_checkpoint.json
+
 # Editors
 .vscode/

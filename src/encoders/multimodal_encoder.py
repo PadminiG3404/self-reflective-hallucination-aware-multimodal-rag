@@ -59,9 +59,14 @@ class MultimodalEncoder:
 
     def encode_text(self, texts: List[str]) -> EncoderOutput:
         self._load()
-        inputs = self._processor(text=texts, return_tensors="pt", padding=True).to(
-            self.device
-        )
+        max_length = getattr(self._processor.tokenizer, "model_max_length", 77)
+        inputs = self._processor(
+            text=texts,
+            return_tensors="pt",
+            padding=True,
+            truncation=True,
+            max_length=max_length,
+        ).to(self.device)
         with torch.no_grad():
             if self.model_type == "clip":
                 embeddings = self._model.get_text_features(**inputs)
