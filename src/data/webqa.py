@@ -158,7 +158,14 @@ def load_webqa_questions(
         pos_facts = sample.get("img_posFacts", [])
         if pos_facts:
             image_id = str(pos_facts[0].get("image_id") or "")
-        questions.append({"guid": guid, "question": question, "image_id": image_id})
+        questions.append(
+            {
+                "guid": guid,
+                "question": question,
+                "image_id": image_id,
+                "answers": sample.get("A") or [],
+            }
+        )
     return questions
 
 

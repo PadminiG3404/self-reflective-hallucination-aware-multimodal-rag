@@ -12,3 +12,5 @@ hydra-core
 wandb
 pytest
 pillow
+matplotlib
+

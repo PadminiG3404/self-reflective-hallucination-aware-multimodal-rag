@@ -71,3 +71,55 @@ def explainability_completeness(trace: str, evidence_count: int) -> float:
 
 def latency_ms(start_time: float, end_time: float) -> float:
     return float(max(0.0, (end_time - start_time) * 1000.0))
+
+
+def exact_match(predicted: str, references: List[str]) -> float:
+    if not references:
+        return 0.0
+    normalized = _normalize_text(predicted)
+    for reference in references:
+        if normalized == _normalize_text(reference):
+            return 1.0
+    return 0.0
+
+
+def token_f1(predicted: str, references: List[str]) -> tuple[float, float, float]:
+    if not references:
+        return 0.0, 0.0, 0.0
+    pred_tokens = _normalize_text(predicted).split()
+    if not pred_tokens:
+        return 0.0, 0.0, 0.0
+    best_f1 = 0.0
+    best_precision = 0.0
+    best_recall = 0.0
+    pred_counts = {token: pred_tokens.count(token) for token in pred_tokens}
+    for reference in references:
+        ref_tokens = _normalize_text(reference).split()
+        if not ref_tokens:
+            continue
+        ref_counts = {token: ref_tokens.count(token) for token in ref_tokens}
+        overlap = 0
+        for token, count in pred_counts.items():
+            overlap += min(count, ref_counts.get(token, 0))
+        precision = overlap / max(1, len(pred_tokens))
+        recall = overlap / max(1, len(ref_tokens))
+        if precision + recall == 0:
+            f1 = 0.0
+        else:
+            f1 = 2 * precision * recall / (precision + recall)
+        if f1 > best_f1:
+            best_f1 = f1
+            best_precision = precision
+            best_recall = recall
+    return float(best_precision), float(best_recall), float(best_f1)
+
+
+def mean_reciprocal_rank(retrieved_ids: List[str], relevant_ids: List[str]) -> float:
+    for idx, chunk_id in enumerate(retrieved_ids, start=1):
+        if chunk_id in relevant_ids:
+            return float(1.0 / idx)
+    return 0.0
+
+
+def _normalize_text(text: str) -> str:
+    return " ".join("".join(ch.lower() if ch.isalnum() else " " for ch in text).split())

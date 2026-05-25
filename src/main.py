@@ -42,6 +42,7 @@ from src.utils.schemas import (
 from src.utils.seed import set_seed
 from src.evaluation.runner import EvaluationRunner
 from src.evaluation import metrics
+from src.evaluation.experiment_runner import ExperimentRunner
 
 
 class HallucinationAwareMultimodalRAG:
@@ -464,11 +465,15 @@ if __name__ == "__main__":
     parser.add_argument("--query", type=str, default="What is shown in the image?")
     parser.add_argument("--image", type=str, default=None)
     parser.add_argument("--evaluate", action="store_true", help="Run evaluation over dataset")
+    parser.add_argument("--run-experiments", action="store_true", help="Run full results pipeline")
     args = parser.parse_args()
 
     config_path = Path(__file__).resolve().parent / "config" / "default.yaml"
     config = OmegaConf.to_container(OmegaConf.load(config_path), resolve=True)
-    if args.evaluate:
+    if args.run_experiments:
+        runner = ExperimentRunner(config=config, rag_factory=HallucinationAwareMultimodalRAG)
+        runner.run_all()
+    elif args.evaluate:
         eval_cfg = config.get("evaluation", {})
         if eval_cfg.get("fast_mode"):
             config.setdefault("answer_generation", {})["enabled"] = False
@@ -535,6 +540,7 @@ if __name__ == "__main__":
                         "query": item.get("question"),
                         "image_id": item.get("image_id"),
                         "guid": item.get("guid"),
+                        "answers": item.get("answers"),
                         "relevant_chunk_ids": relevance_map.get(item.get("guid"), []),
                     }
                 )
