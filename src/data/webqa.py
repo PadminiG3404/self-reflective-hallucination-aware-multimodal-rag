@@ -160,3 +160,31 @@ def load_webqa_questions(
             image_id = str(pos_facts[0].get("image_id") or "")
         questions.append({"guid": guid, "question": question, "image_id": image_id})
     return questions
+
+
+def build_webqa_relevance_map(
+    data_path: Path,
+    split: Optional[str] = None,
+    max_items: Optional[int] = None,
+) -> Dict[str, List[str]]:
+    loader = WebQALoader(data_path)
+    relevance: Dict[str, List[str]] = {}
+    count = 0
+    for guid, sample in loader.iter_examples():
+        if split and sample.get("split") != split:
+            continue
+        count += 1
+        if max_items is not None and count > max_items:
+            break
+        facts = list(sample.get("img_posFacts", []))
+        chunk_ids = []
+        for idx, fact in enumerate(facts):
+            image_id = str(fact.get("image_id") or "")
+            caption = str(fact.get("caption") or "").strip()
+            title = str(fact.get("title") or "").strip()
+            text = caption or title
+            if not text:
+                continue
+            chunk_ids.append(f"{guid}_img_{image_id}_{idx}")
+        relevance[guid] = chunk_ids
+    return relevance

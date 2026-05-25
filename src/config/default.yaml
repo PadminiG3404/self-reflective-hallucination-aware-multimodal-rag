@@ -8,7 +8,7 @@ dataset:
   format: webqa
   split: train
   include_negatives: false
-  max_items: 2000
+  max_items: 200
   image_tsv: dataset/WebQA/imgs.tsv
 
 encoder:
@@ -20,26 +20,62 @@ retrieval:
   index_type: flat
   top_k: 5
   multimodal_alpha: 0.5
+  enable_image_index: false
 
 reasoning:
   max_hops: 3
   min_confidence: 0.35
+  path_weights:
+    edge_confidence: 0.25
+    retrieval_support: 0.2
+    semantic_similarity: 0.2
+    graph_coherence: 0.2
+    node_importance: 0.15
 
 hallucination:
   similarity_threshold: 0.25
   contradiction_threshold: 0.5
   nli_model: cross-encoder/nli-deberta-v3-base
   enable_nli: false
+  factor_weights:
+    grounding: 0.3
+    contradiction: 0.3
+    retrieval_drift: 0.2
+    graph_inconsistency: 0.2
+  factor_enabled:
+    grounding: true
+    contradiction: true
+    retrieval_drift: true
+    graph_inconsistency: true
+  severity_thresholds:
+    medium: 0.4
+    high: 0.7
 
 uncertainty:
   temperature: 1.0
+  calibration_bins: 10
 
 reflection:
   max_iterations: 2
   refinement_confidence_threshold: 0.5
+  weak_step_threshold: 0.35
+  missing_evidence_threshold: 0.2
 
 explainability:
   include_trace: true
+
+answer_generation:
+  enabled: true
+  model_name: google/flan-t5-small
+  device: cpu
+  max_new_tokens: 96
+
+captioning:
+  enabled: true
+  model_name: Salesforce/blip-image-captioning-base
+  device: cpu
+  max_new_tokens: 30
+  use_caption_only: true
 
 entities:
   top_k: 3
@@ -47,5 +83,23 @@ entities:
 
 evaluation:
   max_items: 10
-  log_every: 25
+  log_every: 1
   checkpoint_path: data/webqa_eval_checkpoint.json
+  fast_mode: true
+  enable_failure_analysis: true
+  failure_output_dir: data/failure_analysis
+  failure_thresholds:
+    high_hallucination: 0.6
+    low_confidence: 0.4
+    low_evidence: 0.2
+  ablations:
+    disable_graph_reasoning: false
+    disable_reflection: false
+    disable_refinement: false
+    disable_hallucination_verifier: false
+    disable_uncertainty: false
+    disable_multimodal_fusion: false
+  wandb:
+    enabled: false
+    project: multimodal_rag
+    run_name: null

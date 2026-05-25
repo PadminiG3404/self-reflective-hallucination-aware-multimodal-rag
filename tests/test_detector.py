@@ -8,6 +8,8 @@ def test_hallucination_detection():
         ReasoningStep(step_id="s1", statement="", evidence_ids=[], confidence=0.1),
         ReasoningStep(step_id="s2", statement="", evidence_ids=[], confidence=0.9),
     ]
-    report = detector.detect(steps)
+    report = detector.detect(steps, evidence_texts=["supporting evidence"])
     assert report.hallucination_score > 0
     assert "s1" in report.affected_nodes
+    assert "grounding" in report.factor_scores
+    assert report.severity_level in {"low", "medium", "high"}
